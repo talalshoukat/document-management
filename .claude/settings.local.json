@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(conda create:*)",
+      "Bash(source activate:*)",
+      "Bash(conda activate:*)",
+      "Bash(pip install:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(conda run:*)",
+      "Bash(tesseract:*)",
+      "Bash(TESSDATA_PREFIX=/opt/homebrew/share/tessdata conda run -n docstructure python:*)",
+      "Bash(chmod:*)",
+      "Bash(system_profiler:*)",
+      "Bash(sysctl:*)"
+    ]
+  }
+}
