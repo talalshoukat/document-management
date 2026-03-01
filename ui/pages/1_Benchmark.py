@@ -47,6 +47,10 @@ with st.sidebar:
     )
 
     use_cache = st.checkbox("Use cache", value=True, help="Skip OCR for previously cached results.")
+    use_llm_eval = st.checkbox(
+        "GPT evaluation", value=True,
+        help="Score OCR quality using GPT-4o-mini. Uses your OPENAI_API_KEY. Results are cached.",
+    )
 
     st.divider()
 
@@ -65,25 +69,69 @@ with st.sidebar:
             if st.button(label, key=run_info["run_id"]):
                 loaded = load_benchmark_run(run_info["path"])
                 st.session_state["benchmark_run"] = loaded
-                st.session_state["benchmark_samples"] = None  # no images for loaded runs
+                # Load sample images from local dataset for the inspector
+                from src.benchmark.dataset import BenchmarkDataset
+                _ds = BenchmarkDataset()
+                if _ds.is_saved_locally():
+                    _ids = {r.sample_id for r in loaded.results}
+                    _all = _ds.load(max_samples=None)
+                    st.session_state["benchmark_samples"] = [s for s in _all if s.id in _ids]
+                else:
+                    st.session_state["benchmark_samples"] = None
     else:
         st.info("No previous runs.")
 
+
+# ---------------------------------------------------------------------------
+# Dataset Status & Download
+# ---------------------------------------------------------------------------
+from src.benchmark.dataset import BenchmarkDataset
+
+dataset = BenchmarkDataset()
+
+if dataset.is_saved_locally():
+    local_count = dataset.local_sample_count()
+    st.success(f"Dataset ready — {local_count} samples saved locally")
+else:
+    st.warning("Dataset not downloaded yet. Download it once, then all future runs load instantly from disk.")
+    if st.button("Download Dataset (1,000 samples from HuggingFace)", type="secondary"):
+        with st.status("Downloading dataset...", expanded=True) as dl_status:
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            def dl_progress(current: int, total: int, message: str):
+                if total > 0:
+                    progress_bar.progress(current / total)
+                status_text.text(message)
+
+            try:
+                count = dataset.download_and_save(on_progress=dl_progress)
+                progress_bar.empty()
+                status_text.empty()
+                dl_status.update(label=f"Downloaded {count} samples!", state="complete")
+                st.rerun()
+            except Exception as e:
+                progress_bar.empty()
+                status_text.empty()
+                dl_status.update(label="Download failed", state="error")
+                st.error(f"Download failed: {e}\n\nAdd `HF_TOKEN=hf_xxx` to your .env file to avoid rate limits.")
+                st.stop()
 
 # ---------------------------------------------------------------------------
 # Main — Run Benchmark
 # ---------------------------------------------------------------------------
 run_col1, run_col2 = st.columns([3, 1])
 with run_col2:
-    run_clicked = st.button("Run Benchmark", type="primary", use_container_width=True)
+    run_clicked = st.button(
+        "Run Benchmark", type="primary", use_container_width=True,
+        disabled=not dataset.is_saved_locally(),
+    )
 
 if run_clicked:
-    from src.benchmark.dataset import BenchmarkDataset
     from src.benchmark.runner import BenchmarkRunner
     from src.benchmark.results import save_benchmark_run
 
-    with st.status("Loading dataset from HuggingFace...", expanded=True) as status:
-        dataset = BenchmarkDataset()
+    with st.status("Loading samples...", expanded=True) as status:
         samples = dataset.load(max_samples=sample_count)
 
         # Populate filter options in session
@@ -106,7 +154,7 @@ if run_clicked:
         progress_text = st.empty()
 
         cache_dir = PROJECT_ROOT / "data" / "benchmark_cache"
-        runner = BenchmarkRunner(engines=engines, cache_dir=cache_dir)
+        runner = BenchmarkRunner(engines=engines, cache_dir=cache_dir, use_llm_eval=use_llm_eval)
 
         def on_progress(current: int, total: int, message: str):
             progress_bar.progress(current / total if total else 1.0)
@@ -153,7 +201,7 @@ with tab_overview:
             "Engine": engine,
             "Avg CER": stats["cer"]["mean"],
             "Avg WER": stats["wer"]["mean"],
-            "Avg Levenshtein": stats["levenshtein"]["mean"],
+            "Avg GPT Score": stats["llm_score"]["mean"],
             "Median CER": stats["cer"]["median"],
             "Median WER": stats["wer"]["median"],
             "Total Time (s)": stats["time"]["sum"],
@@ -165,12 +213,12 @@ with tab_overview:
         df_summary.style.format({
             "Avg CER": "{:.3f}",
             "Avg WER": "{:.3f}",
-            "Avg Levenshtein": "{:.3f}",
+            "Avg GPT Score": "{:.2f}",
             "Median CER": "{:.3f}",
             "Median WER": "{:.3f}",
             "Total Time (s)": "{:.1f}",
         }).highlight_min(subset=["Avg CER", "Avg WER"], color="#c6efce")
-          .highlight_max(subset=["Avg Levenshtein"], color="#c6efce"),
+          .highlight_max(subset=["Avg GPT Score"], color="#c6efce"),
         use_container_width=True,
         hide_index=True,
     )
@@ -185,8 +233,8 @@ with tab_overview:
         st.markdown("**Word Error Rate** (lower is better)")
         st.bar_chart(chart_df["Avg WER"])
     with col3:
-        st.markdown("**Levenshtein Similarity** (higher is better)")
-        st.bar_chart(chart_df["Avg Levenshtein"])
+        st.markdown("**GPT Score** (higher is better, 0–1)")
+        st.bar_chart(chart_df["Avg GPT Score"])
 
     # Summary stats
     m1, m2, m3 = st.columns(3)
@@ -214,7 +262,7 @@ with tab_format:
                         "Engine": eng,
                         "Avg CER": stats["cer"]["mean"],
                         "Avg WER": stats["wer"]["mean"],
-                        "Avg Levenshtein": stats["levenshtein"]["mean"],
+                        "Avg GPT Score": stats["llm_score"]["mean"],
                         "Samples": stats["count"],
                     })
             df_fmt = pd.DataFrame(fmt_rows)
@@ -222,14 +270,14 @@ with tab_format:
                 df_fmt.style.format({
                     "Avg CER": "{:.3f}",
                     "Avg WER": "{:.3f}",
-                    "Avg Levenshtein": "{:.3f}",
+                    "Avg GPT Score": "{:.2f}",
                 }),
                 use_container_width=True,
                 hide_index=True,
             )
 
             # Pivot for chart
-            for metric, label in [("Avg CER", "CER by Format"), ("Avg Levenshtein", "Levenshtein by Format")]:
+            for metric, label in [("Avg CER", "CER by Format"), ("Avg GPT Score", "GPT Score by Format")]:
                 pivot = df_fmt.pivot(index="Format", columns="Engine", values=metric)
                 st.markdown(f"**{label}**")
                 st.bar_chart(pivot)
@@ -253,7 +301,7 @@ with tab_quality:
                         "Engine": eng,
                         "Avg CER": stats["cer"]["mean"],
                         "Avg WER": stats["wer"]["mean"],
-                        "Avg Levenshtein": stats["levenshtein"]["mean"],
+                        "Avg GPT Score": stats["llm_score"]["mean"],
                         "Samples": stats["count"],
                     })
             df_qual = pd.DataFrame(qual_rows)
@@ -261,13 +309,13 @@ with tab_quality:
                 df_qual.style.format({
                     "Avg CER": "{:.3f}",
                     "Avg WER": "{:.3f}",
-                    "Avg Levenshtein": "{:.3f}",
+                    "Avg GPT Score": "{:.2f}",
                 }),
                 use_container_width=True,
                 hide_index=True,
             )
 
-            for metric, label in [("Avg CER", "CER by Quality"), ("Avg Levenshtein", "Levenshtein by Quality")]:
+            for metric, label in [("Avg CER", "CER by Quality"), ("Avg GPT Score", "GPT Score by Quality")]:
                 pivot = df_qual.pivot(index="Quality", columns="Engine", values=metric)
                 st.markdown(f"**{label}**")
                 st.bar_chart(pivot)
@@ -285,7 +333,8 @@ with tab_details:
             "Engine": r.engine,
             "CER": r.cer,
             "WER": r.wer,
-            "Levenshtein": r.levenshtein,
+            "GPT Score": r.llm_score,
+            "GPT Feedback": r.llm_feedback,
             "Time (s)": r.time_seconds,
             "Error": r.error or "",
         })
@@ -296,19 +345,19 @@ with tab_details:
     with f_col1:
         filter_engine = st.selectbox("Filter by engine", ["All"] + run.engines, key="detail_engine")
     with f_col2:
-        sort_by = st.selectbox("Sort by", ["CER", "WER", "Levenshtein", "Time (s)"], key="detail_sort")
+        sort_by = st.selectbox("Sort by", ["CER", "WER", "GPT Score", "Time (s)"], key="detail_sort")
 
     filtered_df = df_detail
     if filter_engine != "All":
         filtered_df = filtered_df[filtered_df["Engine"] == filter_engine]
-    ascending = sort_by != "Levenshtein"
+    ascending = sort_by != "GPT Score"
     filtered_df = filtered_df.sort_values(sort_by, ascending=ascending)
 
     st.dataframe(
         filtered_df.style.format({
             "CER": "{:.4f}",
             "WER": "{:.4f}",
-            "Levenshtein": "{:.4f}",
+            "GPT Score": "{:.2f}",
             "Time (s)": "{:.2f}",
         }),
         use_container_width=True,
@@ -334,10 +383,15 @@ with tab_details:
                 # Show OCR outputs per engine
                 sample_results = [r for r in run.results if r.sample_id == selected_id]
                 for r in sample_results:
-                    with st.expander(f"{r.engine} — CER: {r.cer:.3f} | WER: {r.wer:.3f} | Lev: {r.levenshtein:.3f}"):
+                    score_str = f"GPT: {r.llm_score:.2f}" if r.llm_score else ""
+                    with st.expander(
+                        f"{r.engine} — CER: {r.cer:.3f} | WER: {r.wer:.3f} | {score_str}"
+                    ):
                         if r.error:
                             st.error(r.error)
                         else:
+                            if r.llm_feedback:
+                                st.info(f"GPT feedback: {r.llm_feedback}")
                             st.code(r.ocr_text[:2000], language="text")
     elif selected_id:
         st.info("Sample images not available for loaded runs. Run a fresh benchmark to inspect samples.")
@@ -362,7 +416,8 @@ with tab_export:
                     "engine": r.engine,
                     "cer": r.cer,
                     "wer": r.wer,
-                    "levenshtein": r.levenshtein,
+                    "llm_score": r.llm_score,
+                    "llm_feedback": r.llm_feedback,
                     "time_seconds": r.time_seconds,
                     "error": r.error,
                 }
