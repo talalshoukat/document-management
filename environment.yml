@@ -14,8 +14,11 @@ dependencies:
       - python-multipart>=0.0.6
       - python-dotenv>=1.0.0
       - easyocr>=1.7.0
-      - surya-ocr>=0.6.0
+      - surya-ocr==0.4.5
       - streamlit>=1.30.0
       - rich>=13.0.0
-      - numpy>=1.24.0
+      - numpy>=1.24.0,<2
       - rapidfuzz>=3.0.0
+      - datasets>=2.14.0
+      - jiwer>=3.0.0
+      - pypdfium2>=4.0.0
