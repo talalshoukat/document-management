@@ -83,7 +83,7 @@ with st.sidebar:
 
 
 # ---------------------------------------------------------------------------
-# Dataset Status & Download
+# Dataset Status
 # ---------------------------------------------------------------------------
 from src.benchmark.dataset import BenchmarkDataset
 
@@ -93,29 +93,7 @@ if dataset.is_saved_locally():
     local_count = dataset.local_sample_count()
     st.success(f"Dataset ready — {local_count} samples saved locally")
 else:
-    st.warning("Dataset not downloaded yet. Download it once, then all future runs load instantly from disk.")
-    if st.button("Download Dataset (1,000 samples from HuggingFace)", type="secondary"):
-        with st.status("Downloading dataset...", expanded=True) as dl_status:
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-
-            def dl_progress(current: int, total: int, message: str):
-                if total > 0:
-                    progress_bar.progress(current / total)
-                status_text.text(message)
-
-            try:
-                count = dataset.download_and_save(on_progress=dl_progress)
-                progress_bar.empty()
-                status_text.empty()
-                dl_status.update(label=f"Downloaded {count} samples!", state="complete")
-                st.rerun()
-            except Exception as e:
-                progress_bar.empty()
-                status_text.empty()
-                dl_status.update(label="Download failed", state="error")
-                st.error(f"Download failed: {e}\n\nAdd `HF_TOKEN=hf_xxx` to your .env file to avoid rate limits.")
-                st.stop()
+    st.info("Dataset not downloaded yet. Click **Run Benchmark** to download it automatically (one-time, ~1,000 samples).")
 
 # ---------------------------------------------------------------------------
 # Main — Run Benchmark
@@ -124,7 +102,6 @@ run_col1, run_col2 = st.columns([3, 1])
 with run_col2:
     run_clicked = st.button(
         "Run Benchmark", type="primary", use_container_width=True,
-        disabled=not dataset.is_saved_locally(),
     )
 
 if run_clicked:
@@ -132,6 +109,29 @@ if run_clicked:
     from src.benchmark.results import save_benchmark_run
 
     with st.status("Loading samples...", expanded=True) as status:
+        # Auto-download dataset on first run
+        if not dataset.is_saved_locally():
+            status.update(label="Downloading dataset from HuggingFace (one-time)...")
+            dl_bar = st.progress(0)
+            dl_text = st.empty()
+
+            def dl_progress(current: int, total: int, message: str):
+                if total > 0:
+                    dl_bar.progress(current / total)
+                dl_text.text(message)
+
+            try:
+                count = dataset.download_and_save(on_progress=dl_progress)
+                dl_bar.empty()
+                dl_text.empty()
+                status.update(label=f"Downloaded {count} samples. Loading benchmark samples...")
+            except Exception as e:
+                dl_bar.empty()
+                dl_text.empty()
+                status.update(label="Download failed", state="error")
+                st.error(f"Download failed: {e}\n\nAdd `HF_TOKEN=hf_xxx` to your .env file to avoid rate limits.")
+                st.stop()
+
         samples = dataset.load(max_samples=sample_count)
 
         # Populate filter options in session
