@@ -24,14 +24,29 @@ def save_benchmark_run(run: BenchmarkRun, output_dir: Path | str) -> Path:
         "total_time_seconds": run.total_time_seconds,
         "results": [asdict(r) for r in run.results],
     }
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+    # Open the file with UTF-8 encoding and write the JSON with indentation
+    with path.open('w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
     return path
 
 
 def load_benchmark_run(path: Path | str) -> BenchmarkRun:
     """Load a benchmark run from JSON."""
-    data = json.loads(Path(path).read_text())
-    results = [SampleResult(**r) for r in data["results"]]
+    # data = json.loads(Path(path).read_text())
+    # results = [SampleResult(**r) for r in data["results"]]
+
+    # data = json.loads(Path(path).read_text(encoding="utf-8"))
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    results = []
+    for r in data["results"]:
+        # Migrate old runs that used levenshtein instead of llm_score
+        if "levenshtein" in r and "llm_score" not in r:
+            r["llm_score"] = r.pop("levenshtein")
+        r.setdefault("llm_score", 0.0)
+        r.setdefault("llm_feedback", "")
+        results.append(SampleResult(**r))
     return BenchmarkRun(
         run_id=data["run_id"],
         timestamp=data["timestamp"],
@@ -50,7 +65,15 @@ def list_benchmark_runs(results_dir: Path | str) -> list[dict]:
     runs = []
     for f in sorted(results_dir.glob("benchmark_*.json"), reverse=True):
         try:
-            data = json.loads(f.read_text())
+            # Read the file content as text with UTF-8 encoding
+            # file_content = f.read_text(encoding="utf-8")
+            # data = json.loads(f.read_text())
+            try:
+                file_content = f.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                # If UTF-8 fails, try reading with 'windows-1252' or 'ISO-8859-1' encoding
+                file_content = f.read_text(encoding="windows-1252")  # or try 'ISO-8859-1'
+            data = json.loads(file_content)
             runs.append({
                 "run_id": data["run_id"],
                 "timestamp": data["timestamp"],
@@ -78,8 +101,7 @@ def _agg_stats(values: list[float]) -> dict:
 
 def aggregate_by_engine(run: BenchmarkRun) -> dict:
     """Aggregate metrics per engine.
-
-    Returns: {engine_name: {cer: {mean, median, ...}, wer: ..., levenshtein: ..., time: ..., errors: int}}
+    Returns: {engine_name: {cer: {mean,...}, wer: ..., llm_score: ..., time: ..., errors: int}}
     """
     by_engine: dict[str, list[SampleResult]] = {}
     for r in run.results:
@@ -91,7 +113,8 @@ def aggregate_by_engine(run: BenchmarkRun) -> dict:
         agg[engine] = {
             "cer": _agg_stats([r.cer for r in valid]),
             "wer": _agg_stats([r.wer for r in valid]),
-            "levenshtein": _agg_stats([r.levenshtein for r in valid]),
+            "llm_score": _agg_stats([r.llm_score for r in valid]),
+            # "levenshtein": _agg_stats([r.levenshtein for r in valid]),
             "time": {
                 **_agg_stats([r.time_seconds for r in valid if r.time_seconds > 0]),
                 "sum": sum(r.time_seconds for r in valid),
@@ -130,7 +153,8 @@ def aggregate_by_field(
             agg[field_value][engine] = {
                 "cer": _agg_stats([r.cer for r in valid]),
                 "wer": _agg_stats([r.wer for r in valid]),
-                "levenshtein": _agg_stats([r.levenshtein for r in valid]),
+                # "levenshtein": _agg_stats([r.levenshtein for r in valid]),
+                "llm_score": _agg_stats([r.llm_score for r in valid]),
                 "count": len(valid),
             }
     return agg
@@ -142,10 +166,11 @@ def export_to_csv(run: BenchmarkRun, output_path: Path | str) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     fieldnames = [
-        "sample_id", "engine", "cer", "wer", "levenshtein",
+        # "sample_id", "engine", "cer", "wer", "levenshtein",
+        "sample_id", "engine", "cer", "wer", "llm_score", "llm_feedback",
         "time_seconds", "error",
     ]
-    with open(output_path, "w", newline="") as f:
+    with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for r in run.results:
@@ -154,7 +179,10 @@ def export_to_csv(run: BenchmarkRun, output_path: Path | str) -> Path:
                 "engine": r.engine,
                 "cer": f"{r.cer:.4f}",
                 "wer": f"{r.wer:.4f}",
-                "levenshtein": f"{r.levenshtein:.4f}",
+                # "levenshtein": f"{r.levenshtein:.4f}",
+                "llm_score": f"{r.llm_score:.2f}",
+                "llm_feedback": getattr(r, "llm_feedback", ""),
+
                 "time_seconds": f"{r.time_seconds:.2f}",
                 "error": r.error or "",
             })
